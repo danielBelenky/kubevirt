@@ -1424,6 +1424,79 @@ func createOrUpdateServiceMonitors(kv *v1.KubeVirt,
 	return nil
 }
 
+func createOrUpdatePrometheusRules(kv *v1.KubeVirt,
+	targetStrategy *InstallStrategy,
+	stores util.Stores,
+	clientset kubecli.KubevirtClient,
+	expectations *util.Expectations) error {
+
+	if !stores.PrometheusRulesEnabled {
+		return nil
+	}
+
+	prometheusClient := clientset.PrometheusClient()
+
+	kvkey, err := controller.KeyFunc(kv)
+	if err != nil {
+		return err
+	}
+
+	version := kv.Status.TargetKubeVirtVersion
+	imageRegistry := kv.Status.TargetKubeVirtRegistry
+	id := kv.Status.TargetDeploymentID
+
+	for _, prometheusRule := range targetStrategy.prometheusRules {
+		var cachedPrometheusRule *promv1.PrometheusRule
+
+		prometheusRule := prometheusRule.DeepCopy()
+		obj, exists, _ := stores.PrometheusRuleCache.Get(prometheusRule)
+		if exists {
+			cachedPrometheusRule = obj.(*promv1.PrometheusRule)
+		}
+
+		injectOperatorMetadata(kv, &prometheusRule.ObjectMeta, version, imageRegistry, id)
+		if !exists {
+			// Create non existent
+			expectations.PrometheusRule.RaiseExpectations(kvkey, 1, 0)
+			_, err := prometheusClient.MonitoringV1().PrometheusRules(prometheusRule.Namespace).Create(prometheusRule)
+			if err != nil {
+				expectations.PrometheusRule.LowerExpectations(kvkey, 1, 0)
+				return fmt.Errorf("unable to create PrometheusRule %+v: %v", prometheusRule, err)
+			}
+			log.Log.V(2).Infof("PrometheusRule %v created", prometheusRule.GetName())
+
+		} else if !objectMatchesVersion(&cachedPrometheusRule.ObjectMeta, version, imageRegistry, id) {
+			// Patch if old version
+			var ops []string
+
+			// Add Labels and Annotations Patches
+			labelAnnotationPatch, err := createLabelsAndAnnotationsPatch(&prometheusRule.ObjectMeta)
+			if err != nil {
+				return err
+			}
+			ops = append(ops, labelAnnotationPatch...)
+
+			// Add Spec Patch
+			newSpec, err := json.Marshal(prometheusRule.Spec)
+			if err != nil {
+				return err
+			}
+			ops = append(ops, fmt.Sprintf(`{ "op": "replace", "path": "/spec", "value": %s }`, string(newSpec)))
+
+			_, err = prometheusClient.MonitoringV1().PrometheusRules(prometheusRule.Namespace).Patch(prometheusRule.Name, types.JSONPatchType, generatePatchBytes(ops))
+			if err != nil {
+				return fmt.Errorf("unable to patch PrometheusRule %+v: %v", prometheusRule, err)
+			}
+			log.Log.V(2).Infof("PrometheusRule %v updated", prometheusRule.GetName())
+
+		} else {
+			log.Log.V(4).Infof("PrometheusRule %v is up-to-date", prometheusRule.GetName())
+		}
+	}
+
+	return nil
+}
+
 // deprecated, keep it for backwards compatibility
 func addOrRemoveSSC(targetStrategy *InstallStrategy,
 	prevStrategy *InstallStrategy,
@@ -1743,6 +1816,12 @@ func SyncAll(kv *v1.KubeVirt,
 
 	// create/update serviceMonitor
 	err = createOrUpdateServiceMonitors(kv, targetStrategy, stores, clientset, expectations)
+	if err != nil {
+		return false, err
+	}
+
+	// create/update PrometheusRules
+	err = createOrUpdatePrometheusRules(kv, targetStrategy, stores, clientset, expectations)
 	if err != nil {
 		return false, err
 	}

@@ -193,6 +193,21 @@ func Execute() {
 		app.stores.ServiceMonitorCache = app.informerFactory.DummyOperatorServiceMonitor().GetStore()
 	}
 
+	prometheusRuleEnabled, err := util.IsPrometheusRuleEnabled(app.clientSet)
+	if err != nil {
+		golog.Fatalf("Error checking for PrometheusRule: %v", err)
+	}
+	if prometheusRuleEnabled {
+		log.Log.Info("prometheusrule is defined")
+		app.informers.PrometheusRule = app.informerFactory.OperatorPrometheusRule()
+		app.stores.PrometheusRuleCache = app.informerFactory.OperatorPrometheusRule().GetStore()
+		app.stores.PrometheusRulesEnabled = true
+	} else {
+		log.Log.Info("prometheusrule is not defined")
+		app.informers.PrometheusRule = app.informerFactory.DummyOperatorPrometheusRule()
+		app.stores.PrometheusRuleCache = app.informerFactory.DummyOperatorPrometheusRule().GetStore()
+	}
+
 	app.kubeVirtRecorder = app.getNewRecorder(k8sv1.NamespaceAll, "virt-operator")
 	app.kubeVirtController = *NewKubeVirtController(app.clientSet, app.kubeVirtInformer, app.kubeVirtRecorder, app.stores, app.informers, app.operatorNamespace)
 
