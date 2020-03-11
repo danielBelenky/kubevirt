@@ -42,6 +42,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
+	rbacv1 "k8s.io/api/rbac/v1"
 	v1 "kubevirt.io/client-go/api/v1"
 	"kubevirt.io/client-go/kubecli"
 	"kubevirt.io/kubevirt/pkg/virt-controller/leaderelectionconfig"
@@ -53,6 +54,111 @@ var _ = Describe("Infrastructure", func() {
 
 	virtClient, err := kubecli.GetKubevirtClient()
 	tests.PanicOnError(err)
+
+	Describe("Prometheus rules", func() {
+		FIt("should find all deployed alert rules", func() {
+
+			// [ ] create monitoring service account
+			// [ ] create monitoring service account cluster role binding
+			// [ ] query Prometheus endpoint and get all rules
+			// [ ] marshal rules to a struct
+			// [ ] compare what we got to what we deploy
+
+			By("creating a test service account")
+			_, err := virtClient.CoreV1().ServiceAccounts(tests.NamespaceTestDefault).
+				Create(&k8sv1.ServiceAccount{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-prometheus-viewer",
+					},
+					TypeMeta: metav1.TypeMeta{
+						Kind:       "ServiceAccount",
+						APIVersion: "v1",
+					},
+				})
+			Expect(err).ToNot(HaveOccurred(), "expected sa to be created")
+
+			By("binding openshift-cluster-monitoring-view cluster role to test sa")
+			_, err = virtClient.RbacV1().ClusterRoleBindings().
+				Create(&rbacv1.ClusterRoleBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-prometheus-viewer-binding",
+					},
+					TypeMeta: metav1.TypeMeta{
+						Kind:       "ClusterRoleBinding",
+						APIVersion: "rbac.authorization.k8s.io/v1",
+					},
+					Subjects: []rbacv1.Subject{
+						{
+							Kind:      "ServiceAccount",
+							Name:      "test-prometheus-viewer",
+							Namespace: tests.NamespaceTestDefault,
+						},
+					},
+					RoleRef: rbacv1.RoleRef{
+						Kind:     "ClusterRole",
+						Name:     "cluster-monitoring-view",
+						APIGroup: "",
+					},
+				})
+			Expect(err).ToNot(HaveOccurred(), "expected binding to be created")
+
+			By("finding virt-handler pod")
+			handlers, err := virtClient.CoreV1().Pods("kubevirt").
+				List(metav1.ListOptions{LabelSelector: "kubevirt.io=virt-handler"})
+			Expect(err).ToNot(HaveOccurred(), "failed to list virt-handlers")
+			Expect(handlers.Size).ToNot(Equal(0), "failed to find handler")
+			handler := handlers.Items[0]
+
+			By("finding the token of the test monitoring service account")
+			sa, err := virtClient.CoreV1().
+				ServiceAccounts(tests.NamespaceTestDefault).
+				Get("test-prometheus-viewer", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred(), "failed retrieving test sa")
+			var tokenSecretName string
+			for _, secret := range sa.Secrets {
+				if strings.HasPrefix(secret.Name, "test-prometheus-viewer-token-") {
+					tokenSecretName = secret.Name
+					break
+				}
+			}
+			Expect(tokenSecretName).ToNot(BeEmpty(), "could not find token secret name")
+
+			By("extracting monitoring viewer sa token")
+			secret, err := virtClient.CoreV1().Secrets(tests.NamespaceTestDefault).Get(tokenSecretName, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred(), "failed to get sa secret")
+			encodedToken := secret.Data["token"]
+
+			By("finding Prometheus endpoint")
+			ep, err := virtClient.CoreV1().Endpoints("openshift-monitoring").
+				Get("prometheus-k8s", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred(), "failed to retrieve Prometheus endpoint")
+			promIP := ep.Subsets[0].Addresses[0].IP
+			var promPort int32
+			for _, port := range ep.Subsets[0].Ports {
+				if port.Name == "web" {
+					promPort = port.Port
+				}
+			}
+
+			By("querying Prometheus API endpoint for registered rules")
+			By(fmt.Sprintf("Token is: %s", encodedToken))
+			By(fmt.Sprintf("Addr: https://%s:%d/api/v1/rules", promIP, promPort))
+			time.Sleep(5 * time.Minute)
+			stdout, _, err := tests.ExecuteCommandOnPodV2(virtClient,
+				&handler,
+				"virt-handler",
+				[]string{
+					"curl",
+					"-L",
+					"-k",
+					fmt.Sprintf("https://%s:%d/api/v1/rules", promIP, promPort),
+					"-H",
+					fmt.Sprintf("Authorization: Bearer %s", encodedToken),
+				})
+			Expect(err).ToNot(HaveOccurred(), "failed to execute query")
+			Expect(stdout).To(Equal(""))
+		})
+	})
 
 	Describe("[rfe_id:3187][crit:medium][vendor:cnv-qe@redhat.com][level:component] Prometheus Endpoints", func() {
 		var preparedVMIs []*v1.VirtualMachineInstance
