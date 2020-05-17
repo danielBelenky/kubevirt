@@ -119,7 +119,21 @@ var SkipShasumCheck bool
 var DeployTestingInfrastructureFlag = false
 var PathToTestingInfrastrucureManifests = ""
 
-func init() {
+func FlagParse() {
+	registerFlags()
+	flag.Parse()
+
+	// When the flags are not provided, copy the values from normal version tag and prefix
+	if KubeVirtUtilityVersionTag == "" {
+		KubeVirtUtilityVersionTag = KubeVirtVersionTag
+	}
+
+	if KubeVirtUtilityRepoPrefix == "" {
+		KubeVirtUtilityRepoPrefix = KubeVirtRepoPrefix
+	}
+}
+
+func registerFlags() {
 	kubecli.Init()
 	flag.StringVar(&KubeVirtUtilityVersionTag, "utility-container-tag", "", "Set the image tag or digest to use")
 	flag.StringVar(&KubeVirtVersionTag, "container-tag", "latest", "Set the image tag or digest to use")
@@ -139,19 +153,6 @@ func init() {
 	flag.StringVar(&PreviousReleaseRegistry, "previous-release-registry", "", "Set registry of the release to test updating from")
 	flag.StringVar(&ConfigFile, "config", "tests/default-config.json", "Path to a JSON formatted file from which the test suite will load its configuration. The path may be absolute or relative; relative paths start at the current working directory.")
 	flag.BoolVar(&SkipShasumCheck, "skip-shasums-check", false, "Skip tests with sha sums.")
-}
-
-func FlagParse() {
-	flag.Parse()
-
-	// When the flags are not provided, copy the values from normal version tag and prefix
-	if KubeVirtUtilityVersionTag == "" {
-		KubeVirtUtilityVersionTag = KubeVirtVersionTag
-	}
-
-	if KubeVirtUtilityRepoPrefix == "" {
-		KubeVirtUtilityRepoPrefix = KubeVirtRepoPrefix
-	}
 }
 
 type EventType string
